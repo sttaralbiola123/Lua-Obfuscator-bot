@@ -27,7 +27,6 @@ async def ask_gemini(prompt: str) -> str:
     if not api_key:
         raise Exception("API Key is missing! Paki-check ang environment variables sa Render.")
 
-    # Kasama ang pinakabagong models para sa taong 2026
     models = [
         "gemini-2.5-flash",
         "gemini-2.0-flash",
@@ -42,7 +41,6 @@ async def ask_gemini(prompt: str) -> str:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
             async with session.post(url, headers=headers, json=body) as resp:
                 
-                # FIX: Kung hindi 200 OK ang response, i-print ang eksaktong error mula sa Google
                 if resp.status != 200:
                     error_text = await resp.text()
                     print(f"❌ {model} HTTP {resp.status} Error: {error_text}")
@@ -77,8 +75,7 @@ async def on_ready():
 async def analyze_cmd(interaction: discord.Interaction, code: str):
     loading_embed = discord.Embed(
         title="🔍 Analyzing...",
-        description="```Please wait, AI is analyzing your code...
-```",
+        description="Please wait, AI is analyzing your code...",
         color=0x3498DB
     )
     loading_embed.set_footer(text="Lua Obfuscator • Powered by Gemini AI")
@@ -145,8 +142,7 @@ async def obfuscate_cmd(interaction: discord.Interaction, code: str, level: int 
 
     loading_embed = discord.Embed(
         title="⚙️ Obfuscating...",
-        description="```Please wait, AI is obfuscating your code...
-```",
+        description="Please wait, AI is obfuscating your code...",
         color=0xFFA500
     )
     loading_embed.add_field(name="Level", value=f"`{level}`", inline=True)
@@ -176,10 +172,8 @@ Lua code to obfuscate:
     try:
         result = await ask_gemini(prompt)
         
-        # Inilalabas lang ang purong code mula sa response ng AI
         result = re.sub(r"```[a-zA-Z]*", "", result)
-        result = result.replace("
-```", "").strip()
+        result = result.replace("```", "").strip()
 
         file_id = str(uuid.uuid4())[:8].upper()
         file_name = f"obfuscated_{file_id}.txt"
