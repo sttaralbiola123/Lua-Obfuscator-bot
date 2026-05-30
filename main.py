@@ -23,42 +23,35 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
 
 async def ask_gemini(prompt: str) -> str:
-    # FIX 1: Kinukuha ang API key kapag tinawag ang function para iwas 'None' value
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
-        raise Exception("API Key is missing! Paki-check ang environment variables.")
+        raise Exception("API Key is missing! Paki-check ang environment variables sa Render.")
 
-    # FIX 2: Gumamit ng stable/official model names
+    # Kasama ang pinakabagong models para sa taong 2026
     models = [
-        "gemini-1.5-pro",
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
         "gemini-1.5-flash"
     ]
     
     headers = {"Content-Type": "application/json"}
-    
-    # FIX 3: Nilagyan ng Safety Settings na naka-BLOCK_NONE para hindi i-reject ang code obfuscation
-    body = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "safetySettings": [
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"}
-        ]
-    }
+    body = {"contents": [{"parts": [{"text": prompt}]}]}
 
     async with aiohttp.ClientSession() as session:
         for model in models:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
             async with session.post(url, headers=headers, json=body) as resp:
+                
+                # FIX: Kung hindi 200 OK ang response, i-print ang eksaktong error mula sa Google
+                if resp.status != 200:
+                    error_text = await resp.text()
+                    print(f"❌ {model} HTTP {resp.status} Error: {error_text}")
+                    continue
+
                 data = await resp.json()
 
                 if "error" in data:
-                    print(f"❌ {model} error: {data['error']['code']} - {data['error']['message']}")
-                    continue
-
-                if "promptFeedback" in data and "blockReason" in data["promptFeedback"]:
-                    print(f"❌ {model} blocked by safety limits. Reason: {data['promptFeedback']['blockReason']}")
+                    print(f"❌ {model} API error: {data['error']['code']} - {data['error']['message']}")
                     continue
 
                 if "candidates" not in data or not data["candidates"]:
@@ -68,10 +61,10 @@ async def ask_gemini(prompt: str) -> str:
                 try:
                     return data["candidates"][0]["content"]["parts"][0]["text"]
                 except KeyError:
-                    print(f"❌ {model}: Unexpected JSON format.")
+                    print(f"❌ {model}: Unexpected JSON format structure.")
                     continue
 
-    raise Exception("All Gemini models failed. Paki-check ang console logs para sa exact error.")
+    raise Exception("All Gemini models failed. Paki-check ang Render Console Logs para sa eksaktong error text galing kay Google.")
 
 @bot.event
 async def on_ready():
@@ -84,7 +77,8 @@ async def on_ready():
 async def analyze_cmd(interaction: discord.Interaction, code: str):
     loading_embed = discord.Embed(
         title="🔍 Analyzing...",
-        description="```Please wait, AI is analyzing your code...```",
+        description="```Please wait, AI is analyzing your code...
+```",
         color=0x3498DB
     )
     loading_embed.set_footer(text="Lua Obfuscator • Powered by Gemini AI")
@@ -151,7 +145,8 @@ async def obfuscate_cmd(interaction: discord.Interaction, code: str, level: int 
 
     loading_embed = discord.Embed(
         title="⚙️ Obfuscating...",
-        description="```Please wait, AI is obfuscating your code...```",
+        description="```Please wait, AI is obfuscating your code...
+```",
         color=0xFFA500
     )
     loading_embed.add_field(name="Level", value=f"`{level}`", inline=True)
@@ -181,9 +176,10 @@ Lua code to obfuscate:
     try:
         result = await ask_gemini(prompt)
         
-        # FIX 4: Tinatanggal ang markdown codeblocks na minsan naisasama pa rin ng AI
+        # Inilalabas lang ang purong code mula sa response ng AI
         result = re.sub(r"```[a-zA-Z]*", "", result)
-        result = result.replace("```", "").strip()
+        result = result.replace("
+```", "").strip()
 
         file_id = str(uuid.uuid4())[:8].upper()
         file_name = f"obfuscated_{file_id}.txt"
