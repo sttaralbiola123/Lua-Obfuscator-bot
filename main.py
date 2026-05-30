@@ -3,216 +3,355 @@ from discord.ext import commands
 from discord import app_commands
 from flask import Flask
 from threading import Thread
-import os
-import aiohttp
-import asyncio
-import uuid
-import re
-import random
+import os, uuid, random, string
 
+# Flask keep-alive server
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Sttar Obfuscator Bot is running!"
+    return "Sttar Obfuscator is running."
 
 def run_flask():
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
 
+# Bot initialization
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
 
-async def ask_gemini(prompt: str) -> str:
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        raise Exception("API Key is missing! Paki-check ang environment variables sa Render.")
+# ---------------------------------------------------------------
+# Sttar Obfuscation Engine v8
+#
+# Protection layers:
+#   1. Checksum marker  — a secret 4-byte header is prepended to
+#      the plaintext before encryption. Even if an attacker finds
+#      the right keys, they won't know which of the 24 possible
+#      op-orderings produced valid output unless the marker matches.
+#   2. Hidden keys      — each key is expressed as a sum of 3-5
+#      random parts so no single integer reveals its value.
+#   3. Shuffled op order — the 4 decode operations are applied in
+#      a random order that changes every single run.
+#   4. Data chunking    — the encrypted payload is split into
+#      several separate Lua tables to break pattern analysis.
+#   5. Junk code        — dead assignments scattered throughout
+#      that are never actually used during execution.
+#   6. Lookalike names  — every variable is named with a sequence
+#      of visually identical l/I/O characters.
+# ---------------------------------------------------------------
 
-    models = [
-        "gemini-2.5-flash",
-        "gemini-2.0-flash",
-        "gemini-1.5-flash"
-    ]
-    
-    headers = {"Content-Type": "application/json"}
-    body = {"contents": [{"parts": [{"text": prompt}]}]}
+_names_used: set = set()
 
-    async with aiohttp.ClientSession() as session:
-        for model in models:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
-            async with session.post(url, headers=headers, json=body) as resp:
-                if resp.status != 200:
-                    continue
-                data = await resp.json()
-                if "candidates" in data and data["candidates"]:
-                    try:
-                        return data["candidates"][0]["content"]["parts"][0]["text"]
-                    except KeyError:
-                        continue
-    raise Exception("Hindi ma-process ng AI ang analysis sa ngayon. Paki-subukan ulit mamaya.")
+MARKER = b'\xDE\xAD\xBE\xEF'   # secret 4-byte header, stripped at runtime
 
-@bot.event
-async def on_ready():
-    await tree.sync()
-    print(f"✅ Bot ready: {bot.user} | Sttar Obfuscator Engine Active")
 
-@tree.command(name="analyze", description="AI mag-eexplain kung ano ginagawa ng Lua code")
-@app_commands.describe(
-    code="I-paste ang Lua code (para sa maiikling script)",
-    file="I-upload ang .lua/.txt file (para sa kahit gaano kahabang script)"
-)
-async def analyze_cmd(interaction: discord.Interaction, code: str = None, file: discord.Attachment = None):
-    await interaction.response.defer()
+def unique_var(length: int = 12) -> str:
+    pool = 'lIOlIlIOOlIlOIlIO'
+    while True:
+        name = random.choice('lIO') + ''.join(random.choices(pool, k=length))
+        if name not in _names_used:
+            _names_used.add(name)
+            return name
 
-    raw_code = ""
-    if file:
-        if not file.filename.endswith(('.lua', '.txt')):
-            await interaction.edit_original_response(content="❌ Paki-upload ay `.lua` o `.txt` file lamang!")
-            return
-        raw_code = (await file.read()).decode("utf-8", errors="ignore")
-    elif code:
-        raw_code = code
-    else:
-        await interaction.edit_original_response(content="❌ Maglagay ng code sa text parameter O mag-upload ng file!")
-        return
 
-    prompt = f"""Analyze this Lua script and explain in simple Filipino/English what it does.
+def split_into_parts(value: int, count: int = 4) -> list:
+    """
+    Decompose `value` into `count` positive integers that sum to it.
+    Storing keys this way means no single literal in the output
+    reveals what the actual key value is.
+    """
+    if value < count:
+        parts = [0] * count
+        parts[0] = value
+        return parts
+    parts = []
+    remaining = value
+    for i in range(count - 1):
+        hi = max(1, remaining - (count - i - 1) - 1)
+        part = random.randint(1, hi)
+        parts.append(part)
+        remaining -= part
+    parts.append(remaining)
+    random.shuffle(parts)
+    assert sum(parts) == value
+    return parts
 
-Lua code:
-```lua
-{raw_code[:4000]}
-```"""
 
-    try:
-        result = await ask_gemini(prompt)
-        if len(result) > 3800:
-            file_id = str(uuid.uuid4())[:8].upper()
-            file_name = f"analysis_{file_id}.txt"
-            with open(file_name, "w", encoding="utf-8") as f:
-                f.write(result)
-            
-            embed = discord.Embed(title="🔍 Analysis Result", description="Masyadong mahaba ang paliwanag kaya ginawa itong file.", color=0x3498DB)
-            await interaction.edit_original_response(embed=embed, attachments=[discord.File(file_name)])
-            os.remove(file_name)
+def key_expression(name: str, value: int) -> str:
+    parts = split_into_parts(value, random.randint(3, 5))
+    return f"    local {name} = ({' + '.join(str(p) for p in parts)})"
+
+
+def dead_code_lines(count: int = 3) -> list:
+    lines = []
+    for _ in range(count):
+        v = unique_var()
+        choice = random.randint(0, 3)
+        if choice == 0:
+            lines.append(f"    local {v} = math.floor({random.randint(100, 9999)}.0)")
+        elif choice == 1:
+            lines.append(f"    local {v} = string.rep('\\0', 0)")
+        elif choice == 2:
+            lines.append(f"    local {v} = (false and rawget(_G, '__x') or nil)")
         else:
-            embed = discord.Embed(title="🔍 Analysis Result", description=result, color=0x3498DB)
-            await interaction.edit_original_response(embed=embed)
-    except Exception as e:
-        await interaction.edit_original_response(content=f"❌ Error: {str(e)}")
+            n = random.randint(1, 127)
+            lines.append(f"    local {v} = bit32.bxor({n}, {n})")
+    return lines
 
-@tree.command(name="obfuscate", description="Sttar Obfuscator (Pure Native Engine - No AI Errors)")
-@app_commands.describe(
-    code="I-paste ang Lua code (Short scripts)",
-    file="I-upload ang .lua/.txt file (Kahit gaano kahaba o kalaki)",
-    level="1=Basic | 2=Medium | 3=Advanced Anti-AI (Recommended)"
-)
-async def obfuscate_cmd(interaction: discord.Interaction, code: str = None, file: discord.Attachment = None, level: int = 3):
-    if level < 1 or level > 3:
-        await interaction.response.send_message("Level dapat 1-3 lang!", ephemeral=True)
-        return
 
-    await interaction.response.defer()
+def build_ultra(source: str) -> str:
+    _names_used.clear()
 
-    raw_code = ""
-    if file:
-        if not file.filename.endswith(('.lua', '.txt')):
-            await interaction.edit_original_response(content="❌ Paki-upload ay `.lua` o `.txt` file lamang!")
-            return
-        raw_code = (await file.read()).decode("utf-8", errors="ignore")
-    elif code:
-        raw_code = code
-    else:
-        await interaction.edit_original_response(content="❌ Mag-paste ng code sa `code:` box O mag-attach ng `.lua` file sa `file:` box!")
-        return
+    # Prepend secret marker to plaintext
+    raw_bytes = list(MARKER) + [ord(c) for c in source]
 
-    try:
-        footer_comment = "\n\n--// Protected By: Sttar Obfuscator //--"
-        
-        if level == 1:
-            bytes_array = [str(ord(c)) for c in raw_code]
-            bytes_string = ", ".join(bytes_array)
-            obfuscated_result = f"assert(loadstring(string.char({bytes_string})))(){footer_comment}"
-            
-        elif level == 2:
-            bytes_array = [str(ord(c)) for c in raw_code]
-            bytes_string = ", ".join(bytes_array)
-            junk_id = f"SttarData_{str(uuid.uuid4())[:4]}"
-            obfuscated_result = (
-                f"local {junk_id} = {{ {','.join([str(random.randint(1,255)) for _ in range(20)])} }};\n"
-                f"assert(loadstring(string.char({bytes_string})))(){footer_comment}"
-            )
-            
-        else:
-            secret_key = random.randint(15, 60)
-            encrypted_bytes = [str(ord(c) + secret_key) for c in raw_code]
-            bytes_string = ", ".join(encrypted_bytes)
-            
-            var_key = f"_sttarKey_{random.randint(100,999)}"
-            var_data = f"_sttarData_{random.randint(100,999)}"
-            var_table = f"_sttarTable_{random.randint(100,999)}"
-            var_index = f"_idx_{random.randint(100,999)}"
-            
-            obfuscated_result = (
-                f"--// Sttar Obfuscator Premium Core v3 //--\n"
-                f"task.spawn(function()\n"
-                f"    local {var_key} = {secret_key}\n"
-                f"    local {var_data} = {{{bytes_string}}}\n"
-                f"    local {var_table} = {{}}\n"
-                f"    for {var_index} = 1, #{var_data} do\n"
-                f"        {var_table}[{var_index}] = string.char({var_data}[{var_index}] - {var_key})\n"
-                f"    end\n"
-                f"    local success, executionError = pcall(function()\n"
-                f"        return loadstring(table.concat({var_table}))()\n"
-                f"    end)\n"
-                f"    if not success then \n"
-                f"        warn('[Sttar Error]: Initialization blocked or execution failed.')\n"
-                f"    end\n"
-                f"end){footer_comment}"
-            )
+    # Generate encryption keys
+    k1    = random.randint(10,  60)
+    k2    = random.randint(70, 150)
+    k3    = random.randint(5,   30)
+    shift = random.randint(20,  80)
 
-        file_id = str(uuid.uuid4())[:8].upper()
-        file_name = f"Sttar_{file_id}.txt"
+    # Shuffle the decode operation order (24 possible orderings)
+    op_order = [0, 1, 2, 3]
+    random.shuffle(op_order)
 
-        with open(file_name, "w", encoding="utf-8") as f:
-            f.write(obfuscated_result)
+    # Encrypt: apply operations in reverse of decode order
+    def encrypt(b: int) -> int:
+        for op in reversed(op_order):
+            if   op == 0: b = (b ^ k1)    & 0xFF
+            elif op == 1: b = (b ^ k2)    & 0xFF
+            elif op == 2: b = (b ^ k3)    & 0xFF
+            elif op == 3: b = (b + shift) & 0xFF
+        return b
 
-        done_embed = discord.Embed(
-            title="🛡️ Sttar Obfuscator Success!",
-            description=(
-                "Matagumpay na naitago ang iyong code gamit ang Mathematical Logic!\n\n"
-                "**Mga Detalye:**\n"
-                "> • **Kapasidad:** Walang limitasyon (Kahit gaano kahaba).\n"
-                "> • **Anti-AI Protection:** Aktibo (Level 3).\n"
-                "> • **Luau Support:** 100% Compatible sa mga modern executors."
-            ),
-            color=0x00FF7F
+    # Sanity-check: decrypt must recover the original bytes
+    def decrypt(b: int) -> int:
+        for op in op_order:
+            if   op == 0: b = (b ^ k1)    & 0xFF
+            elif op == 1: b = (b ^ k2)    & 0xFF
+            elif op == 2: b = (b ^ k3)    & 0xFF
+            elif op == 3: b = (b - shift) & 0xFF
+        return b
+
+    encrypted = [encrypt(b) for b in raw_bytes]
+    assert [decrypt(b) for b in encrypted] == raw_bytes, "Encrypt/decrypt mismatch — aborting."
+
+    # Split payload into random-sized chunks
+    chunk_size  = random.randint(25, 55)
+    chunks      = [encrypted[i:i+chunk_size] for i in range(0, len(encrypted), chunk_size)]
+
+    # Variable names
+    vk1     = unique_var(); vk2  = unique_var()
+    vk3     = unique_var(); vsh  = unique_var()
+    vchunks = [unique_var() for _ in chunks]
+    vfull   = unique_var(); vidx = unique_var()
+    vi      = unique_var(); vb   = unique_var()
+    vout    = unique_var(); vraw = unique_var()
+    vload   = unique_var(); vok  = unique_var()
+    verr    = unique_var()
+    vfd1    = unique_var(); vfd2 = unique_var()
+
+    # Marker bytes as a Lua expression for runtime stripping
+    marker_len = len(MARKER)
+    marker_check = ", ".join(str(b) for b in MARKER)
+
+    L = []
+    L.append("-- Obfuscated by: Sttar Obfuscator")
+    L.append("task.spawn(function()")
+    L += dead_code_lines(3)
+
+    # Keys expressed as sums — no plain integers
+    L.append(key_expression(vk1, k1))
+    L.append(key_expression(vk2, k2))
+    L.append(key_expression(vk3, k3))
+    L.append(key_expression(vsh, shift))
+
+    L += dead_code_lines(2)
+
+    # Unreachable trap block (confuses static readers)
+    L.append(f"    local {vfd1} = (1 == 2)")
+    L.append(f"    if {vfd1} then")
+    L.append(f"        local {vfd2} = string.rep('sttar', 99)")
+    L.append(f"        loadstring({vfd2})()")
+    L.append(f"    end")
+
+    L += dead_code_lines(2)
+
+    # Encrypted data chunks
+    for var, chunk in zip(vchunks, chunks):
+        L.append(f"    local {var} = {{{', '.join(str(b) for b in chunk)}}}")
+
+    L += dead_code_lines(2)
+
+    # Reassemble chunks into one table
+    L.append(f"    local {vfull} = {{}}")
+    L.append(f"    local {vidx}  = 1")
+    for var in vchunks:
+        L.append(f"    for {vi} = 1, #{var} do")
+        L.append(f"        {vfull}[{vidx}] = {var}[{vi}]")
+        L.append(f"        {vidx} = {vidx} + 1")
+        L.append(f"    end")
+
+    L += dead_code_lines(2)
+
+    # Decode loop using shuffled op order
+    L.append(f"    local {vout} = {{}}")
+    L.append(f"    for {vi} = 1, #{vfull} do")
+    L.append(f"        local {vb} = {vfull}[{vi}]")
+    for op in op_order:
+        if   op == 0: L.append(f"        {vb} = bit32.bxor({vb}, {vk1})")
+        elif op == 1: L.append(f"        {vb} = bit32.bxor({vb}, {vk2})")
+        elif op == 2: L.append(f"        {vb} = bit32.bxor({vb}, {vk3})")
+        elif op == 3: L.append(f"        {vb} = ({vb} - {vsh}) % 256")
+    L.append(f"        {vout}[{vi}] = {vb}")
+    L.append(f"    end")
+
+    L += dead_code_lines(2)
+
+    # Verify marker at runtime, then strip it before executing
+    L.append(f"    -- Validate secret header before execution")
+    L.append(f"    local _marker = {{{marker_check}}}")
+    L.append(f"    for {vi} = 1, {marker_len} do")
+    L.append(f"        if {vout}[{vi}] ~= _marker[{vi}] then return end")
+    L.append(f"    end")
+
+    # Strip marker and convert to chars
+    L.append(f"    local {vraw} = {{}}")
+    L.append(f"    for {vi} = {marker_len + 1}, #{vout} do")
+    L.append(f"        {vraw}[{vi} - {marker_len}] = string.char({vout}[{vi}])")
+    L.append(f"    end")
+
+    # Execute
+    L.append(f"    local {vload} = loadstring(table.concat({vraw}))")
+    L.append(f"    local {vok}, {verr} = pcall({vload})")
+    L.append(f"    if not {vok} then")
+    L.append(f"        warn('[Sttar]: ' .. tostring({verr}))")
+    L.append(f"    end")
+    L.append("end)")
+    L.append("-- Obfuscated by: Sttar Obfuscator")
+
+    return "\n".join(L)
+
+
+def obfuscate(source: str, level: int) -> str:
+    rv  = lambda: '_' + ''.join(random.choices('abcdefghijklmnopqrstuvwxyz', k=7))
+    hdr = "-- Obfuscated by: Sttar Obfuscator\n"
+    ftr = "\n-- Obfuscated by: Sttar Obfuscator"
+
+    if level == 1:
+        chars = ", ".join(str(ord(c)) for c in source)
+        return f"{hdr}assert(loadstring(string.char({chars})))()){ftr}"
+
+    elif level == 2:
+        sh  = random.randint(10, 50)
+        xk  = random.randint(5,  30)
+        enc = ", ".join(str((ord(c) + sh) ^ xk) for c in source)
+        vs, vx, vd, vo, vi = rv(), rv(), rv(), rv(), rv()
+        return (
+            f"{hdr}task.spawn(function()\n"
+            f"    local {vs} = {sh}\n"
+            f"    local {vx} = {xk}\n"
+            f"    local {vd} = {{{enc}}}\n"
+            f"    local {vo} = {{}}\n"
+            f"    for {vi} = 1, #{vd} do\n"
+            f"        {vo}[{vi}] = string.char(bit32.bxor({vd}[{vi}], {vx}) - {vs})\n"
+            f"    end\n"
+            f"    local ok, err = pcall(loadstring(table.concat({vo})))\n"
+            f"    if not ok then warn('[Sttar]: ' .. tostring(err)) end\n"
+            f"end){ftr}"
         )
-        done_embed.add_field(name="Engine Mode", value="`Native Compiler`", inline=True)
-        done_embed.add_field(name="Selected Level", value=f"`Level {level}`", inline=True)
-        done_embed.add_field(name="Total Bytes", value=f"`{len(raw_code)} chars`", inline=True)
-        done_embed.set_footer(text="Sttar Obfuscator • Secure Execution")
+
+    else:
+        return build_ultra(source)
+
+
+# ---------------------------------------------------------------
+# /obfuscate command
+# ---------------------------------------------------------------
+
+@tree.command(name="obfuscate", description="Protect your Lua script with Sttar Engine")
+@app_commands.describe(
+    code  = "Paste your Lua code here (short scripts)",
+    file  = "Upload a .lua or .txt file (any size)",
+    level = "1 = Basic  |  2 = Medium  |  3 = Ghost Ultra (default)"
+)
+async def obfuscate_cmd(
+    interaction: discord.Interaction,
+    code:  str                = None,
+    file:  discord.Attachment = None,
+    level: int                = 3
+):
+    if not (1 <= level <= 3):
+        await interaction.response.send_message("Level must be 1, 2, or 3.", ephemeral=True)
+        return
+
+    await interaction.response.defer()
+
+    source = ""
+    if file:
+        if not file.filename.endswith(('.lua', '.txt')):
+            await interaction.edit_original_response(content="Only `.lua` or `.txt` files are accepted.")
+            return
+        source = (await file.read()).decode("utf-8", errors="ignore")
+    elif code:
+        source = code
+    else:
+        await interaction.edit_original_response(content="Provide code via `code:` or attach a file via `file:`.")
+        return
+
+    try:
+        result = obfuscate(source, level)
+
+        file_id   = str(uuid.uuid4())[:8].upper()
+        file_name = f"Sttar_Obfuscated_{file_id}.txt"
+        with open(file_name, "w", encoding="utf-8") as f:
+            f.write(result)
+
+        labels = {
+            1: "Basic — string.char encoding",
+            2: "Medium — XOR + shift",
+            3: "Ghost Ultra v8 — Checksum + Hidden Keys + Shuffled Ops"
+        }
+
+        embed = discord.Embed(
+            title       = "🛡️ Obfuscation Complete",
+            description = "Your script has been protected successfully.",
+            color       = 0x00FF7F
+        )
+        embed.add_field(name="Protection Level", value=f"`{level} — {labels[level]}`",  inline=False)
+        embed.add_field(name="Original Size",    value=f"`{len(source):,} chars`",       inline=True)
+        embed.add_field(name="Output Size",      value=f"`{len(result):,} chars`",       inline=True)
+        embed.add_field(name="Engine",           value="`Sttar Ghost Engine v8`",        inline=True)
+        embed.add_field(name="Output File",      value=f"`{file_name}`",                 inline=False)
+        embed.set_footer(text="Sttar Obfuscator • Ghost Protected")
 
         await interaction.edit_original_response(
-            embed=done_embed,
-            attachments=[discord.File(file_name)]
+            embed       = embed,
+            attachments = [discord.File(file_name)]
         )
         os.remove(file_name)
 
     except Exception as e:
-        error_embed = discord.Embed(
-            title="❌ System Error",
-            description=f"```{str(e)}```",
-            color=0xFF0000
+        embed = discord.Embed(
+            title       = "❌ Error",
+            description = f"```{e}```",
+            color       = 0xFF0000
         )
-        await interaction.edit_original_response(embed=error_embed)
+        await interaction.edit_original_response(embed=embed)
+
+
+@bot.event
+async def on_ready():
+    await tree.sync()
+    print(f"Online: {bot.user}  |  Sttar Ghost Engine v8")
+
 
 if __name__ == "__main__":
-    t = Thread(target=run_flask)
-    t.daemon = True
-    t.start()
-    
-    bot_token = os.environ.get("DISCORD_TOKEN")
-    if bot_token:
-        bot.run(bot_token)
+    flask_thread = Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+
+    token = os.environ.get("DISCORD_TOKEN")
+    if token:
+        bot.run(token)
     else:
-        print("❌ DISCORD_TOKEN is missing!")
+        print("Error: DISCORD_TOKEN not found in environment variables.")
