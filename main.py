@@ -76,8 +76,12 @@ async def analyze_cmd(interaction: discord.Interaction, code: str = None, file: 
         await interaction.edit_original_response(content="❌ Maglagay ng code sa text parameter O mag-upload ng file!")
         return
 
-    prompt = f"Analyze this Lua script and explain in simple Filipino/English what it does.\n\nLua code:\n```lua\n{raw_code[:4000]}\n
-```"
+    prompt = f"""Analyze this Lua script and explain in simple Filipino/English what it does.
+
+Lua code:
+```lua
+{raw_code[:4000]}
+```"""
 
     try:
         result = await ask_gemini(prompt)
