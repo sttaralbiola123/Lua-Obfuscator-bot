@@ -37,11 +37,18 @@ async def ask_gemini(prompt: str) -> str:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_KEY}"
             async with session.post(url, headers=headers, json=body) as resp:
                 data = await resp.json()
-                if "error" in data and data["error"]["code"] == 429:
+
+                if "error" in data:
+                    print(f"❌ {model} error: {data['error']['code']} - {data['error']['message']}")
                     continue
+
+                if "candidates" not in data or not data["candidates"]:
+                    print(f"❌ {model}: No candidates in response")
+                    continue
+
                 return data["candidates"][0]["content"]["parts"][0]["text"]
 
-    raise Exception("All Gemini models are rate limited. Try again later.")
+    raise Exception("All Gemini models failed. Check your API key or try again later.")
 
 @bot.event
 async def on_ready():
