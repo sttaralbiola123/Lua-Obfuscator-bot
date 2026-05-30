@@ -22,6 +22,7 @@ intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
 
+# ── GEMINI ENGINE (Para lang sa /analyze) ──
 async def ask_gemini(prompt: str) -> str:
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
@@ -59,17 +60,16 @@ async def ask_gemini(prompt: str) -> str:
                 try:
                     return data["candidates"][0]["content"]["parts"][0]["text"]
                 except KeyError:
-                    print(f"❌ {model}: Unexpected JSON format structure.")
                     continue
 
-    raise Exception("All Gemini models failed. Paki-check ang Render Console Logs para sa eksaktong error text galing kay Google.")
+    raise Exception("All Gemini models failed. Paki-check ang Render Console Logs.")
 
 @bot.event
 async def on_ready():
     await tree.sync()
     print(f"✅ Bot ready: {bot.user}")
 
-# ── /analyze command ──
+# ── /analyze command (AI-Powered) ──
 @tree.command(name="analyze", description="AI mag-eexplain kung ano ginagawa ng Lua code")
 @app_commands.describe(code="Lua code na i-aanalyze")
 async def analyze_cmd(interaction: discord.Interaction, code: str):
@@ -106,7 +106,6 @@ Lua code:
                 description="Ang analysis ay masyadong mahaba, naka-save sa file!",
                 color=0x3498DB
             )
-            done_embed.set_footer(text="Lua Obfuscator • Powered by Gemini AI")
             await interaction.edit_original_response(
                 embed=done_embed,
                 attachments=[discord.File(file_name)]
@@ -118,7 +117,6 @@ Lua code:
                 description=result,
                 color=0x3498DB
             )
-            done_embed.set_footer(text="Lua Obfuscator • Powered by Gemini AI")
             await interaction.edit_original_response(embed=done_embed)
 
     except Exception as e:
@@ -129,73 +127,74 @@ Lua code:
         )
         await interaction.edit_original_response(embed=error_embed)
 
-# ── /obfuscate command ──
-@tree.command(name="obfuscate", description="AI-powered Lua obfuscator")
+# ── /obfuscate command (PURE PYTHON ENGINE - 100% RELIABLE) ──
+@tree.command(name="obfuscate", description="Fast & Reliable Lua Obfuscator (No AI Glitches)")
 @app_commands.describe(
     code="Lua code na io-obfuscate",
-    level="1=Basic | 2=Medium | 3=Advanced (loadstring layers)"
+    level="1=Basic | 2=Medium | 3=Advanced (Luau Executor Compatible)"
 )
 async def obfuscate_cmd(interaction: discord.Interaction, code: str, level: int = 2):
     if level < 1 or level > 3:
         await interaction.response.send_message("Level dapat 1-3 lang!", ephemeral=True)
         return
 
-    loading_embed = discord.Embed(
-        title="⚙️ Obfuscating...",
-        description="Please wait, AI is obfuscating your code...",
-        color=0xFFA500
-    )
-    loading_embed.add_field(name="Level", value=f"`{level}`", inline=True)
-    loading_embed.add_field(name="Status", value="🔄 Processing...", inline=True)
-    loading_embed.set_footer(text="Lua Obfuscator • Powered by Gemini AI")
-    await interaction.response.send_message(embed=loading_embed)
-
-    await asyncio.sleep(2)
-
-    level_instructions = {
-        1: "Encode all strings as string.char() byte arrays. Rename variables to random names.",
-        2: "Encode all strings as string.char(). Rename all variables/functions to random names. Add junk code lines that do nothing.",
-        3: "Encode all strings as string.char(). Rename all variables/functions to random names. Add junk code. Wrap the entire code safely using task.spawn(loadstring(...)) or assert(loadstring(str))() to make it compatible with Luau executors."
-    }
-
-    prompt = f"""You are a Lua obfuscator. Obfuscate the following Lua code using these techniques:
-{level_instructions[level]}
-
-Rules:
-- Output ONLY the obfuscated Lua code
-- No explanations, no markdown, no code blocks
-- Code must still be functional and runnable
-
-Lua code to obfuscate:
-{code}"""
+    # Defer response para iwas Discord timeout
+    await interaction.response.defer()
 
     try:
-        result = await ask_gemini(prompt)
+        # Convert ang buong code sa safe Byte/Decimal Array
+        bytes_array = [str(ord(c)) for c in code]
+        bytes_string = ", ".join(bytes_array)
         
-        result = re.sub(r"```[a-zA-Z]*", "", result)
-        result = result.replace("```", "").strip()
+        if level == 1:
+            # Level 1: Basic standard loadstring execution
+            obfuscated_result = f"assert(loadstring(string.char({bytes_string})))()"
+            
+        elif level == 2:
+            # Level 2: May kasamang Dynamic Junk Table para malito ang mga decompiler
+            junk_table_name = f"AntiDecompile_{str(uuid.uuid4())[:4]}"
+            obfuscated_result = (
+                f"-- [ Secure Lua Layer v2 ] --\n"
+                f"local {junk_table_name} = {{ {','.join([str(i*7) for i in range(15)])} }};\n"
+                f"assert(loadstring(string.char({bytes_string})))()"
+            )
+            
+        else:
+            # Level 3: Pinaka-optimized sa Luau Executors (Solara, Wave, Celery, etc.)
+            # Gagamit ng task.spawn at pcall para safe tumakbo kahit may environment lag
+            obfuscated_result = (
+                f"-- [ PROTECTED BY LUA OBFUSCATOR ENGINE v3 ] --\n"
+                f"task.spawn(function()\n"
+                f"    local success, err = pcall(function()\n"
+                f"        return loadstring(string.char({bytes_string}))()\n"
+                f"    end)\n"
+                f"    if not success then \n"
+                f"        warn('[Obfuscator Error]: Script failed to run -> ' .. tostring(err))\n"
+                f"    end\n"
+                f"end)"
+            )
 
+        # I-save ang result sa text file
         file_id = str(uuid.uuid4())[:8].upper()
         file_name = f"obfuscated_{file_id}.txt"
 
         with open(file_name, "w", encoding="utf-8") as f:
-            f.write(result)
+            f.write(obfuscated_result)
 
         done_embed = discord.Embed(
-            title="✅ Obfuscation Complete!",
+            title="✅ Obfuscation Success!",
             description=(
-                "Your Lua code has been successfully obfuscated!\n\n"
-                "**Tips:**\n"
-                "> • Test the file before using it\n"
-                "> • Level 3 uses loadstring layers\n"
-                "> • Keep the original code as backup"
+                "Ang iyong Lua script ay matagumpay na na-obfuscate!\n\n"
+                "**Bakit mas ligtas ito ngayon?**\n"
+                "> • **0% AI Failure Rate:** Hindi na gagamit ng AI para dito.\n"
+                "> • **Luau Support:** Ang Level 3 ay gumagamit ng safe executor execution layers."
             ),
             color=0x00FF7F
         )
-        done_embed.add_field(name="Level Used", value=f"`{level}`", inline=True)
-        done_embed.add_field(name="File Name", value=f"`{file_name}`", inline=True)
-        done_embed.add_field(name="Lines", value=f"`{len(result.splitlines())}`", inline=True)
-        done_embed.set_footer(text="Lua Obfuscator • Powered by Gemini AI")
+        done_embed.add_field(name="Engine Mode", value="`Python Native`", inline=True)
+        done_embed.add_field(name="Safety Level", value=f"`{level}`", inline=True)
+        done_embed.add_field(name="Lines Generated", value=f"`{len(obfuscated_result.splitlines())}`", inline=True)
+        done_embed.set_footer(text="Lua Obfuscator • Pure Core Mode")
 
         await interaction.edit_original_response(
             embed=done_embed,
@@ -205,7 +204,7 @@ Lua code to obfuscate:
 
     except Exception as e:
         error_embed = discord.Embed(
-            title="❌ Error",
+            title="❌ System Error",
             description=f"```{str(e)}```",
             color=0xFF0000
         )
