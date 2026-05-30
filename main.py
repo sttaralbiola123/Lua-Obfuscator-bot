@@ -7,6 +7,7 @@ import os
 import aiohttp
 import asyncio
 import uuid
+import re
 
 app = Flask(__name__)
 
@@ -21,20 +22,34 @@ intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
 
-GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
-
 async def ask_gemini(prompt: str) -> str:
+    # FIX 1: Kinukuha ang API key kapag tinawag ang function para iwas 'None' value
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise Exception("API Key is missing! Paki-check ang environment variables.")
+
+    # FIX 2: Gumamit ng stable/official model names
     models = [
-        "gemini-2.5-flash-preview-05-20",
-        "gemini-2.0-flash",
-        "gemini-1.5-flash",
+        "gemini-1.5-pro",
+        "gemini-1.5-flash"
     ]
+    
     headers = {"Content-Type": "application/json"}
-    body = {"contents": [{"parts": [{"text": prompt}]}]}
+    
+    # FIX 3: Nilagyan ng Safety Settings na naka-BLOCK_NONE para hindi i-reject ang code obfuscation
+    body = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "safetySettings": [
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"}
+        ]
+    }
 
     async with aiohttp.ClientSession() as session:
         for model in models:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_KEY}"
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
             async with session.post(url, headers=headers, json=body) as resp:
                 data = await resp.json()
 
@@ -42,13 +57,21 @@ async def ask_gemini(prompt: str) -> str:
                     print(f"❌ {model} error: {data['error']['code']} - {data['error']['message']}")
                     continue
 
-                if "candidates" not in data or not data["candidates"]:
-                    print(f"❌ {model}: No candidates in response")
+                if "promptFeedback" in data and "blockReason" in data["promptFeedback"]:
+                    print(f"❌ {model} blocked by safety limits. Reason: {data['promptFeedback']['blockReason']}")
                     continue
 
-                return data["candidates"][0]["content"]["parts"][0]["text"]
+                if "candidates" not in data or not data["candidates"]:
+                    print(f"❌ {model}: No candidates. Raw response: {data}")
+                    continue
 
-    raise Exception("All Gemini models failed. Check your API key or try again later.")
+                try:
+                    return data["candidates"][0]["content"]["parts"][0]["text"]
+                except KeyError:
+                    print(f"❌ {model}: Unexpected JSON format.")
+                    continue
+
+    raise Exception("All Gemini models failed. Paki-check ang console logs para sa exact error.")
 
 @bot.event
 async def on_ready():
@@ -67,7 +90,7 @@ async def analyze_cmd(interaction: discord.Interaction, code: str):
     loading_embed.set_footer(text="Lua Obfuscator • Powered by Gemini AI")
     await interaction.response.send_message(embed=loading_embed)
 
-    await asyncio.sleep(3)
+    await asyncio.sleep(2)
 
     prompt = f"""Analyze this Lua script and explain in simple Filipino/English what it does.
 List the main functions, what variables do, and the overall purpose.
@@ -136,12 +159,12 @@ async def obfuscate_cmd(interaction: discord.Interaction, code: str, level: int 
     loading_embed.set_footer(text="Lua Obfuscator • Powered by Gemini AI")
     await interaction.response.send_message(embed=loading_embed)
 
-    await asyncio.sleep(5)
+    await asyncio.sleep(2)
 
     level_instructions = {
         1: "Encode all strings as string.char() byte arrays. Rename variables to random names.",
         2: "Encode all strings as string.char(). Rename all variables/functions to random names. Add junk code lines that do nothing.",
-        3: "Encode all strings as string.char(). Rename all variables/functions to random names. Add junk code. Then wrap the ENTIRE obfuscated code inside 3 nested loadstring(string.char(...))() calls."
+        3: "Encode all strings as string.char(). Rename all variables/functions to random names. Add junk code. Wrap the entire code safely using task.spawn(loadstring(...)) or assert(loadstring(str))() to make it compatible with Luau executors."
     }
 
     prompt = f"""You are a Lua obfuscator. Obfuscate the following Lua code using these techniques:
@@ -157,7 +180,10 @@ Lua code to obfuscate:
 
     try:
         result = await ask_gemini(prompt)
-        result = result.replace("```lua", "").replace("```", "").strip()
+        
+        # FIX 4: Tinatanggal ang markdown codeblocks na minsan naisasama pa rin ng AI
+        result = re.sub(r"```[a-zA-Z]*", "", result)
+        result = result.replace("```", "").strip()
 
         file_id = str(uuid.uuid4())[:8].upper()
         file_name = f"obfuscated_{file_id}.txt"
@@ -199,4 +225,9 @@ if __name__ == "__main__":
     t = Thread(target=run_flask)
     t.daemon = True
     t.start()
-    bot.run(os.environ.get("DISCORD_TOKEN"))
+    
+    bot_token = os.environ.get("DISCORD_TOKEN")
+    if bot_token:
+        bot.run(bot_token)
+    else:
+        print("❌ DISCORD_TOKEN is missing!")
